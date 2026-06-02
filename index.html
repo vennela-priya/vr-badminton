@@ -27,6 +27,27 @@
   #status { margin-top: 18px; font-size: .85rem; color: #ff9b9b; min-height: 20px; }
   #hint { margin-top: 8px; font-size: .8rem; color: #6b7ba0; }
   .vr-button-wrap { margin-top: 18px; }
+  /* Force Three.js's ENTER VR button to sit prominently inside the menu
+     instead of being tucked at the bottom of the screen (where it can be
+     off-screen in the windowed Quest browser). */
+  #VRButton {
+    position: static !important;
+    margin: 6px auto 0 !important;
+    transform: none !important;
+    left: auto !important; right: auto !important; bottom: auto !important;
+    width: auto !important;
+    min-width: 220px !important;
+    padding: 16px 42px !important;
+    font: 700 1.15rem -apple-system, "Segoe UI", Roboto, sans-serif !important;
+    border-radius: 999px !important;
+    background: linear-gradient(135deg, #00d4ff, #0066ff) !important;
+    border: none !important;
+    color: #fff !important;
+    opacity: 1 !important;
+    letter-spacing: .5px;
+    box-shadow: 0 8px 30px rgba(0,150,255,.5);
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -44,17 +65,83 @@
     <div id="hint">No external game assets — everything is generated procedurally.</div>
   </div>
 
-  <!-- Three.js via importmap (CDN with module fallback handled in script) -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  <!-- Bootstrap: find a reachable CDN, install the import map, then run the game.
+       If one CDN is blocked/slow on the headset network we fall back to another,
+       and any failure is shown on screen instead of leaving a dead menu. -->
+  <script>
+  (function () {
+    const statusEl = document.getElementById('status');
+    function status(msg) { if (statusEl) statusEl.textContent = msg; }
+
+    // Surface load/parse/runtime errors so the headset shows WHY it failed.
+    window.addEventListener('error', function (e) {
+      const m = (e && (e.message || (e.error && e.error.message))) || 'load error';
+      if (!statusEl.textContent || statusEl.textContent === 'Loading 3D engine…') status('Error: ' + m);
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      status('Error: ' + ((e.reason && e.reason.message) || e.reason || 'load failed'));
+    });
+
+    const VER = '0.160.0';
+    // jsdelivr and unpkg both mirror the npm file tree (/build + /examples/jsm).
+    const CDNS = [
+      'https://cdn.jsdelivr.net/npm/three@' + VER,
+      'https://unpkg.com/three@' + VER
+    ];
+
+    async function pickCDN() {
+      for (const base of CDNS) {
+        try {
+          await import(base + '/build/three.module.js'); // succeeds only if reachable
+          return base;
+        } catch (err) { /* try the next CDN */ }
+      }
+      return null;
     }
-  }
+
+    (async function boot() {
+      if (!('xr' in navigator)) {
+        status('No WebXR here — open this page inside the Meta Quest headset Browser.');
+      }
+      status('Loading 3D engine…');
+
+      const base = await pickCDN();
+      if (!base) {
+        status('Could not load the 3D engine. Check the headset Wi-Fi / internet and reload.');
+        return;
+      }
+
+      const im = document.createElement('script');
+      im.type = 'importmap';
+      im.textContent = JSON.stringify({
+        imports: {
+          'three': base + '/build/three.module.js',
+          'three/addons/': base + '/examples/jsm/'
+        }
+      });
+      document.head.appendChild(im);
+
+      const game = document.createElement('script');
+      game.type = 'module';
+      game.textContent = document.getElementById('game-source').textContent;
+      document.body.appendChild(game);
+
+      status('');
+
+      // Watchdog: if the ENTER VR button never appears, say so.
+      setTimeout(function () {
+        const btn = document.getElementById('VRButton');
+        if ((!btn || btn.style.display === 'none') && !statusEl.textContent) {
+          status('No ENTER VR button? Make sure you opened this inside the Quest headset Browser.');
+        }
+      }, 9000);
+    })();
+  })();
   </script>
 
-  <script type="module">
+  <!-- The whole game. Held as text/plain and injected as a module by the bootstrap
+       above, once a working import map is in place. -->
+  <script type="text/plain" id="game-source">
   import * as THREE from 'three';
   import { VRButton } from 'three/addons/webxr/VRButton.js';
   import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
