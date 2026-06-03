@@ -1,16 +1,17 @@
 import * as THREE from 'three';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { ARButton } from 'three/addons/webxr/ARButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 // ============================================================
-//  CONSTANTS
+//  CONSTANTS  (halfLen/halfWidth can be overridden from room bounds)
 // ============================================================
 const COURT = { halfLen: 6.7, halfWidth: 3.05, netY: 1.55, netHalfH: 0.38 };
 const GRAVITY = -9.8;
 const DRAG = 0.18;
 const MAX_TRAIL = 30;
 const WIN_SCORE = 7;
-const STATE = { BOOT: 0, READY: 1, SERVING: 2, RALLY: 3, POINT: 4, OVER: 5 };
+const STATE = { BOOT: 0, SERVING: 2, RALLY: 3, POINT: 4, OVER: 5 };
+const SERVE_VEL_THRESH = 3.2; // m/s right-hand swing needed to serve
 
 // ============================================================
 //  DOM
@@ -21,14 +22,14 @@ const statusEl = document.getElementById('status');
 //  SCENE / RENDERER / CAMERA
 // ============================================================
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x101826);
-scene.fog = new THREE.Fog(0x101826, 18, 40);
+// No background — AR passthrough fills it
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 100);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 0);   // transparent background for AR
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.xr.enabled = true;
@@ -39,7 +40,7 @@ renderer.domElement.style.inset = '0';
 
 const clock = new THREE.Clock();
 
-// Player rig
+// Player rig (will be repositioned from room bounds on session start)
 const player = new THREE.Group();
 player.add(camera);
 scene.add(player);
@@ -61,11 +62,10 @@ let shuttleActive = false;
 const trailPoints = [];
 
 // ============================================================
-//  RACKET TRACKING
+//  RACKET TRACKING  (right hand only)
 // ============================================================
 let ghostRacket = null;
 let racketHolder = null;
-let racketScanned = false;
 const racketPrev = new THREE.Vector3();
 const racketVel = new THREE.Vector3();
 const racketHeadWorld = new THREE.Vector3();
@@ -79,11 +79,12 @@ const controllers = [];
 const grips = [];
 
 // ============================================================
-//  SCENE OBJECTS (populated by build* functions)
+//  SCENE OBJECTS
 // ============================================================
-let shuttle, shuttleTrail, opponent, readyButton, net;
+let shuttle, shuttleTrail, opponent, net;
 let scoreBoard, msgBoard;
 let audienceMesh;
+let courtGroup; // all court geometry in one group for easy scaling
 
 // ============================================================
 //  AI STATE
@@ -93,7 +94,6 @@ const oppState = {
   target: new THREE.Vector3(0, 0, -(COURT.halfLen - 1.6)),
   swingT: -1,
   anim: 'idle',
-  willReturn: true
 };
 
 // ============================================================
@@ -111,43 +111,34 @@ const _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
 //  LIGHTING
 // ============================================================
 function buildLighting() {
-  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x3a4055, 0.75));
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 1.2));
 
-  const key = new THREE.DirectionalLight(0xffffff, 1.6);
+  const key = new THREE.DirectionalLight(0xffffff, 1.8);
   key.position.set(4, 9, 2);
   key.castShadow = true;
   key.shadow.mapSize.set(1024, 1024);
-  key.shadow.camera.near = 1; key.shadow.camera.far = 30;
-  const s = 9;
+  const s = 10;
   key.shadow.camera.left = -s; key.shadow.camera.right = s;
   key.shadow.camera.top = s; key.shadow.camera.bottom = -s;
+  key.shadow.camera.near = 1; key.shadow.camera.far = 30;
   key.shadow.bias = -0.0004;
   scene.add(key);
-
-  scene.add(new THREE.DirectionalLight(0x88aaff, 0.4)).position.set(-5, 6, -4);
-
-  for (let i = -1; i <= 1; i += 2) {
-    const spot = new THREE.SpotLight(0xffffff, 0.6, 30, Math.PI / 5, 0.5, 1.2);
-    spot.position.set(i * 4, 8, 0);
-    spot.target.position.set(i * 2, 0, 0);
-    scene.add(spot); scene.add(spot.target);
-  }
 }
 
 // ============================================================
-//  COURT
+//  COURT  (transparent floor so real room shows through)
 // ============================================================
 function buildCourt() {
+  courtGroup = new THREE.Group();
+
+  // Court markings canvas
   const W = 512, H = 1024;
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#1d6b3a'; ctx.fillRect(0, 0, W, H);
-  for (let i = 0; i < H; i += 18) {
-    ctx.fillStyle = (i / 18) % 2 ? '#1f7340' : '#1c6739';
-    ctx.fillRect(0, i, W, 18);
-  }
-  ctx.strokeStyle = '#f4f7ff'; ctx.lineWidth = 6;
+  // Semi-transparent green so real floor shows through in AR
+  ctx.fillStyle = 'rgba(20,100,50,0.72)'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 6;
   const pad = 40;
   ctx.strokeRect(pad, pad, W - 2 * pad, H - 2 * pad);
   ctx.beginPath();
@@ -170,20 +161,13 @@ function buildCourt() {
 
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(COURT.halfWidth * 2 + 1.5, COURT.halfLen * 2 + 1.5),
-    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85 })
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, transparent: true, opacity: 0.82, depthWrite: false })
   );
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
-  scene.add(floor);
+  courtGroup.add(floor);
 
-  const arena = new THREE.Mesh(
-    new THREE.PlaneGeometry(60, 60),
-    new THREE.MeshStandardMaterial({ color: 0x0d1320, roughness: 1 })
-  );
-  arena.rotation.x = -Math.PI / 2;
-  arena.position.y = -0.01;
-  arena.receiveShadow = true;
-  scene.add(arena);
+  scene.add(courtGroup);
 }
 
 // ============================================================
@@ -191,8 +175,8 @@ function buildCourt() {
 // ============================================================
 function buildNet() {
   net = new THREE.Group();
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.6, roughness: 0.4 });
   const postGeo = new THREE.CylinderGeometry(0.04, 0.05, COURT.netY, 12);
-  const postMat = new THREE.MeshStandardMaterial({ color: 0x222831, metalness: 0.6, roughness: 0.4 });
   for (let s = -1; s <= 1; s += 2) {
     const post = new THREE.Mesh(postGeo, postMat);
     post.position.set(s * (COURT.halfWidth + 0.2), COURT.netY / 2, 0);
@@ -202,8 +186,7 @@ function buildNet() {
   const netCv = document.createElement('canvas');
   netCv.width = 256; netCv.height = 64;
   const nctx = netCv.getContext('2d');
-  nctx.clearRect(0, 0, 256, 64);
-  nctx.strokeStyle = 'rgba(255,255,255,0.55)'; nctx.lineWidth = 1;
+  nctx.strokeStyle = 'rgba(255,255,255,0.7)'; nctx.lineWidth = 1;
   for (let x = 0; x <= 256; x += 8) { nctx.beginPath(); nctx.moveTo(x, 0); nctx.lineTo(x, 64); nctx.stroke(); }
   for (let y = 0; y <= 64; y += 8) { nctx.beginPath(); nctx.moveTo(0, y); nctx.lineTo(256, y); nctx.stroke(); }
   nctx.fillStyle = '#ffffff'; nctx.fillRect(0, 0, 256, 7);
@@ -218,46 +201,45 @@ function buildNet() {
 }
 
 // ============================================================
-//  AUDIENCE
+//  AUDIENCE  (side rows + end rows)
 // ============================================================
 function buildAudience() {
-  const count = 240;
+  const count = 320;
   const geo = new THREE.BoxGeometry(0.4, 0.7, 0.35);
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.9 });
   audienceMesh = new THREE.InstancedMesh(geo, mat, count);
   audienceMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   const color = new THREE.Color();
   const dummy = new THREE.Object3D();
-  let i = 0;
-  const rows = 4;
+  let idx = 0;
   audienceMesh.userData.base = [];
 
-  function place(x, z, ry) {
-    if (i >= count) return;
-    dummy.position.set(x, 0.9, z);
-    dummy.rotation.y = ry;
-    dummy.scale.set(1, 1, 1);
+  function place(x, z, ry, yOff = 0) {
+    if (idx >= count) return;
+    dummy.position.set(x, 0.9 + yOff, z);
+    dummy.rotation.set(0, ry, 0);
     dummy.updateMatrix();
-    audienceMesh.setMatrixAt(i, dummy.matrix);
+    audienceMesh.setMatrixAt(idx, dummy.matrix);
     color.setHSL(Math.random(), 0.55, 0.45 + Math.random() * 0.2);
-    audienceMesh.setColorAt(i, color);
-    audienceMesh.userData.base.push({ x, z, ry, phase: Math.random() * Math.PI * 2, y: 0.9 });
-    i++;
+    audienceMesh.setColorAt(idx, color);
+    audienceMesh.userData.base.push({ x, z, ry, phase: Math.random() * Math.PI * 2, y: 0.9 + yOff });
+    idx++;
   }
 
-  function placeTier(x, z, ry, yOff) {
-    const idxBefore = audienceMesh.userData.base.length;
-    place(x, z, ry);
-    const b = audienceMesh.userData.base[idxBefore];
-    if (b) b.y = 0.9 + yOff;
-  }
-
+  const rows = 3;
   for (let r = 0; r < rows; r++) {
-    const off = COURT.halfLen + 2.2 + r * 0.9;
+    const endOff = COURT.halfLen + 2.2 + r * 0.9;
+    const sideOff = COURT.halfWidth + 2.0 + r * 0.9;
     const yOff = r * 0.55;
+    // end rows
     for (let x = -5; x <= 5; x += 0.9) {
-      placeTier(x, off, Math.PI, yOff);
-      placeTier(x, -off, 0, yOff);
+      place(x, endOff, Math.PI, yOff);
+      place(x, -endOff, 0, yOff);
+    }
+    // side rows
+    for (let z = -COURT.halfLen + 1; z <= COURT.halfLen - 1; z += 0.9) {
+      place(sideOff, z, -Math.PI / 2, yOff);
+      place(-sideOff, z, Math.PI / 2, yOff);
     }
   }
   audienceMesh.castShadow = false;
@@ -296,24 +278,17 @@ function makeRacket({ ghost = false } = {}) {
   g.add(handle);
 
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, 0.18, 10), frameMat);
-  shaft.position.y = 0.27;
-  shaft.castShadow = !ghost;
-  g.add(shaft);
+  shaft.position.y = 0.27; shaft.castShadow = !ghost; g.add(shaft);
 
   const head = new THREE.Mesh(new THREE.TorusGeometry(0.105, 0.01, 10, 36), frameMat);
-  head.position.y = 0.46;
-  head.scale.set(1, 1.18, 1);
-  head.castShadow = !ghost;
-  g.add(head);
+  head.position.y = 0.46; head.scale.set(1, 1.18, 1); head.castShadow = !ghost; g.add(head);
 
   const stringMat = new THREE.MeshBasicMaterial({
     color: ghost ? 0x9ff7ff : 0xffffff,
     transparent: true, opacity: ghost ? 0.32 : 0.5, side: THREE.DoubleSide
   });
   const bed = new THREE.Mesh(new THREE.CircleGeometry(0.1, 24), stringMat);
-  bed.position.y = 0.46;
-  bed.scale.set(1, 1.18, 1);
-  g.add(bed);
+  bed.position.y = 0.46; bed.scale.set(1, 1.18, 1); g.add(bed);
 
   const lineMat = new THREE.LineBasicMaterial({ color: ghost ? 0xbffbff : 0xdddddd, transparent: true, opacity: 0.6 });
   const pts = [];
@@ -329,7 +304,6 @@ function makeRacket({ ghost = false } = {}) {
     pts.push(new THREE.Vector3(-xext, 0.46 + y, 0.001), new THREE.Vector3(xext, 0.46 + y, 0.001));
   }
   g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
-
   g.userData.headLocal = new THREE.Vector3(0, 0.46, 0);
   g.userData.headRadius = 0.13;
   return g;
@@ -341,8 +315,8 @@ function makeRacket({ ghost = false } = {}) {
 function buildOpponent() {
   opponent = new THREE.Group();
   const skin = new THREE.MeshStandardMaterial({ color: 0xe0a878, roughness: 0.7 });
-  const shirt = makeFabricMat(0x2244cc);
-  const shorts = makeFabricMat(0xffffff);
+  const shirt = new THREE.MeshStandardMaterial({ color: 0x2244cc, roughness: 0.85 });
+  const shorts = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
 
   const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.34, 6, 12), shirt);
   torso.position.y = 1.15; torso.castShadow = true; opponent.add(torso);
@@ -365,13 +339,9 @@ function buildOpponent() {
 
   const armPivot = new THREE.Group();
   armPivot.position.set(0.22, 1.32, 0);
-  const rArm = new THREE.Mesh(armGeo, skin);
-  rArm.position.set(0, -0.17, 0); rArm.castShadow = true;
-  armPivot.add(rArm);
+  const rArm = new THREE.Mesh(armGeo, skin); rArm.position.set(0, -0.17, 0); rArm.castShadow = true; armPivot.add(rArm);
   const oppRacket = makeRacket({ ghost: false });
-  oppRacket.position.set(0, -0.34, 0);
-  oppRacket.rotation.x = -0.3;
-  armPivot.add(oppRacket);
+  oppRacket.position.set(0, -0.34, 0); oppRacket.rotation.x = -0.3; armPivot.add(oppRacket);
   opponent.add(armPivot);
   opponent.userData.armPivot = armPivot;
   opponent.userData.racket = oppRacket;
@@ -381,10 +351,6 @@ function buildOpponent() {
   scene.add(opponent);
 }
 
-function makeFabricMat(color) {
-  return new THREE.MeshStandardMaterial({ color, roughness: 0.85 });
-}
-
 function animateOpponent(dt, t) {
   if (!opponent) return;
   const ud = opponent.userData;
@@ -392,13 +358,12 @@ function animateOpponent(dt, t) {
   oppState.pos.z += (oppState.target.z - oppState.pos.z) * Math.min(1, dt * 4);
   opponent.position.x = oppState.pos.x;
   opponent.position.z = oppState.pos.z;
+  opponent.position.y = Math.sin(t * 2) * 0.02;
 
-  const idleBob = Math.sin(t * 2) * 0.02;
-  opponent.position.y = idleBob;
-  const sway = Math.sin(t * 1.3) * 0.05;
   ud.lLeg.rotation.x = Math.sin(t * 2) * 0.05;
   ud.rLeg.rotation.x = -Math.sin(t * 2) * 0.05;
   ud.lArm.rotation.z = 0.4 + Math.sin(t * 2) * 0.05;
+  const sway = Math.sin(t * 1.3) * 0.05;
 
   if (oppState.swingT >= 0) {
     oppState.swingT += dt;
@@ -408,9 +373,7 @@ function animateOpponent(dt, t) {
       ud.armPivot.rotation.x = ease;
       ud.armPivot.rotation.z = sway * 0.5 - 0.2;
     } else {
-      oppState.swingT = -1;
-      ud.armPivot.rotation.x = 0;
-      oppState.anim = 'idle';
+      oppState.swingT = -1; ud.armPivot.rotation.x = 0;
     }
   } else {
     ud.armPivot.rotation.x += (-0.5 - ud.armPivot.rotation.x) * Math.min(1, dt * 5);
@@ -425,13 +388,11 @@ function buildShuttle() {
   shuttle = new THREE.Group();
   const cork = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12),
     new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 }));
-  cork.castShadow = true;
-  shuttle.add(cork);
+  cork.castShadow = true; shuttle.add(cork);
 
   const skirt = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.06, 16, 1, true),
     new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, side: THREE.DoubleSide, transparent: true, opacity: 0.92 }));
-  skirt.position.y = 0.04;
-  shuttle.add(skirt);
+  skirt.position.y = 0.04; shuttle.add(skirt);
 
   const fMat = new THREE.LineBasicMaterial({ color: 0xcfd6e0 });
   const fpts = [];
@@ -440,7 +401,6 @@ function buildShuttle() {
     fpts.push(new THREE.Vector3(0, 0.012, 0), new THREE.Vector3(Math.cos(a) * 0.032, 0.07, Math.sin(a) * 0.032));
   }
   shuttle.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(fpts), fMat));
-
   shuttle.userData.corkRadius = 0.022;
   shuttle.visible = false;
   scene.add(shuttle);
@@ -454,91 +414,16 @@ function buildShuttle() {
 }
 
 // ============================================================
-//  READY BUTTON
-// ============================================================
-function buildReadyButton() {
-  readyButton = new THREE.Group();
-  const cv = document.createElement('canvas');
-  cv.width = 512; cv.height = 256;
-  const ctx = cv.getContext('2d');
-  const grad = ctx.createLinearGradient(0, 0, 512, 256);
-  grad.addColorStop(0, '#00d4ff'); grad.addColorStop(1, '#0066ff');
-  roundRect(ctx, 6, 6, 500, 244, 40); ctx.fillStyle = grad; ctx.fill();
-  ctx.lineWidth = 8; ctx.strokeStyle = '#ffffff'; ctx.stroke();
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 58px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('READY', 256, 96);
-  ctx.fillText('FOR THE SHOT', 256, 162);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-
-  const panel = new THREE.Mesh(
-    new THREE.BoxGeometry(0.7, 0.35, 0.04),
-    [
-      new THREE.MeshStandardMaterial({ color: 0x004488 }),
-      new THREE.MeshStandardMaterial({ color: 0x004488 }),
-      new THREE.MeshStandardMaterial({ color: 0x004488 }),
-      new THREE.MeshStandardMaterial({ color: 0x004488 }),
-      new THREE.MeshStandardMaterial({ map: tex, emissive: 0x113355, emissiveIntensity: 0.4 }),
-      new THREE.MeshStandardMaterial({ map: tex, emissive: 0x113355, emissiveIntensity: 0.4 }),
-    ]
-  );
-  panel.castShadow = true;
-  readyButton.add(panel);
-  readyButton.userData.panel = panel;
-  readyButton.userData.vy = 0;
-  readyButton.userData.settled = false;
-  readyButton.userData.restY = 1.15;
-  readyButton.visible = false;
-  scene.add(readyButton);
-}
-
-function placeReadyButtonInFront() {
-  camera.getWorldDirection(_v1);
-  _v1.y = 0; _v1.normalize();
-  camera.getWorldPosition(_v2);
-  const target = _v2.clone().add(_v1.multiplyScalar(1.1));
-  readyButton.position.set(target.x, _v2.y + 1.2, target.z);
-  readyButton.userData.restY = _v2.y - 0.15;
-  readyButton.userData.vy = 0;
-  readyButton.userData.settled = false;
-  readyButton.lookAt(_v2.x, readyButton.userData.restY, _v2.z);
-  readyButton.visible = true;
-}
-
-function updateReadyButton(dt) {
-  if (!readyButton.visible || readyButton.userData.settled) {
-    if (readyButton.visible) {
-      readyButton.position.y = readyButton.userData.restY + Math.sin(clock.elapsedTime * 2) * 0.015;
-    }
-    return;
-  }
-  const ud = readyButton.userData;
-  ud.vy += GRAVITY * dt;
-  readyButton.position.y += ud.vy * dt;
-  if (readyButton.position.y <= ud.restY) {
-    readyButton.position.y = ud.restY;
-    if (Math.abs(ud.vy) > 0.6) {
-      ud.vy = -ud.vy * 0.45;
-      playSound('ground', 0.3);
-    } else {
-      ud.vy = 0; ud.settled = true;
-    }
-  }
-}
-
-// ============================================================
 //  SCOREBOARD
 // ============================================================
 function buildScoreboard() {
   scoreBoard = makeTextPanel(1.6, 0.5);
-  scoreBoard.position.set(0, 3.0, -1.0);
-  scoreBoard.rotation.y = 0;
+  scoreBoard.position.set(0, 3.0, -1.5);
   scene.add(scoreBoard);
   updateScoreboard();
 
   msgBoard = makeTextPanel(2.2, 0.7);
-  msgBoard.position.set(0, 2.0, -1.0);
+  msgBoard.position.set(0, 2.2, -1.5);
   msgBoard.visible = false;
   scene.add(msgBoard);
 }
@@ -550,7 +435,7 @@ function makeTextPanel(w, h) {
   tex.colorSpace = THREE.SRGBColorSpace;
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(w, h),
-    new THREE.MeshBasicMaterial({ map: tex, transparent: true })
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
   );
   mesh.userData = { cv, ctx: cv.getContext('2d'), tex };
   return mesh;
@@ -560,7 +445,7 @@ function drawPanel(panel, lines, opts = {}) {
   const { ctx, cv, tex } = panel.userData;
   ctx.clearRect(0, 0, cv.width, cv.height);
   roundRect(ctx, 0, 0, cv.width, cv.height, 30);
-  ctx.fillStyle = opts.bg || 'rgba(8,14,30,0.82)'; ctx.fill();
+  ctx.fillStyle = opts.bg || 'rgba(8,14,30,0.88)'; ctx.fill();
   ctx.lineWidth = 6; ctx.strokeStyle = opts.border || '#00d4ff'; ctx.stroke();
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const n = lines.length;
@@ -593,7 +478,7 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 // ============================================================
-//  XR INPUTS
+//  XR INPUT SETUP
 // ============================================================
 const controllerModelFactory = new XRControllerModelFactory();
 
@@ -608,7 +493,12 @@ function setupXRInputs() {
     const ctrl = renderer.xr.getController(i);
     ctrl.userData.index = i;
     ctrl.addEventListener('selectstart', onSelectStart);
-    ctrl.addEventListener('connected', (e) => { ctrl.userData.handedness = e.data.handedness; ctrl.userData.gamepad = e.data.gamepad; });
+    ctrl.addEventListener('connected', (e) => {
+      ctrl.userData.handedness = e.data.handedness;
+      // mirror handedness to hand and grip objects
+      if (hands[i]) hands[i].userData.handedness = e.data.handedness;
+      if (grips[i]) grips[i].userData.handedness = e.data.handedness;
+    });
     player.add(ctrl);
     controllers.push(ctrl);
 
@@ -625,60 +515,71 @@ function setupXRInputs() {
   }
 }
 
+// ============================================================
+//  SESSION EVENTS
+// ============================================================
 function onSessionStart() {
   document.getElementById('overlay').style.display = 'none';
   if (!audio) audio = new AudioEngine();
   audio.resume(); audio.startAmbience();
-  gameState = STATE.BOOT;
+
+  // Try bounded-floor to anchor court to room
+  const session = renderer.xr.getSession();
+  if (session) {
+    session.requestReferenceSpace('bounded-floor').then(bf => {
+      if (bf.boundsGeometry && bf.boundsGeometry.length >= 3) {
+        let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (const pt of bf.boundsGeometry) {
+          minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x);
+          minZ = Math.min(minZ, pt.z); maxZ = Math.max(maxZ, pt.z);
+        }
+        // Scale court to fit ~80% of room (capped at real badminton dimensions)
+        COURT.halfWidth = Math.min((maxX - minX) * 0.4, 3.05);
+        COURT.halfLen   = Math.min((maxZ - minZ) * 0.4, 6.7);
+        // Reposition player to near end of court
+        player.position.set(0, 0, COURT.halfLen - 1.4);
+        // Reposition opponent
+        oppState.pos.set(0, 0, -(COURT.halfLen - 1.6));
+        oppState.target.copy(oppState.pos);
+        if (opponent) { opponent.position.copy(oppState.pos); }
+      }
+    }).catch(() => {}); // bounded-floor not available — use defaults
+  }
+
   scorePlayer = 0; scoreAI = 0; updateScoreboard(); hideMessage();
+  ghostRacket.visible = true;
+
   setTimeout(() => {
-    placeReadyButtonInFront();
-    gameState = STATE.READY;
-    racketScanned = false;
-    ghostRacket.visible = false;
-  }, 400);
+    gameState = STATE.SERVING;
+    showMessage([
+      { text: '🏸 LEFT hand = shuttle', size: 56, color: '#7CFC9A' },
+      { text: 'Swing RIGHT hand to serve!', size: 50, color: '#cfe0ff' }
+    ]);
+  }, 600);
 }
 
 function onSessionEnd() {
   document.getElementById('overlay').style.display = 'flex';
   if (audio) audio.stopAmbience();
+  gameState = STATE.BOOT;
 }
 
 function onSelectStart(event) {
-  if (gameState === STATE.READY) {
+  if (gameState === STATE.SERVING) {
+    // Allow manual serve via trigger/pinch (right hand only)
     const src = event.target;
-    let hit = false;
-    if (controllers.includes(src)) {
-      _m.identity().extractRotation(src.matrixWorld);
-      const origin = new THREE.Vector3().setFromMatrixPosition(src.matrixWorld);
-      const dir = new THREE.Vector3(0, 0, -1).applyMatrix4(_m).normalize();
-      hit = new THREE.Raycaster(origin, dir, 0, 5).intersectObject(readyButton.userData.panel, true).length > 0;
-    } else {
-      const tip = getJointWorld(src, 'index-finger-tip', _v1);
-      if (tip) hit = tip.distanceTo(readyButton.position) < 0.45;
-    }
-    if (hit || readyButton.userData.settled) startMatch();
+    const hand = hands.find(h => h === src);
+    const ctrl = controllers.find(c => c === src);
+    const isRight = (hand && hand.userData.handedness === 'right') ||
+                    (ctrl && ctrl.userData.handedness === 'right');
+    if (isRight) serve();
   } else if (gameState === STATE.OVER) {
     resetMatch();
-  } else if (gameState === STATE.SERVING) {
-    serve();
   }
 }
 
-function startMatch() {
-  if (gameState !== STATE.READY) return;
-  playSound('point', 0.4);
-  readyButton.visible = false;
-  racketScanned = true;
-  ghostRacket.visible = true;
-  gameState = STATE.SERVING;
-  showMessage([{ text: 'Racket ready ✓', size: 64, color: '#7CFC9A' },
-               { text: 'Swing to serve', size: 52, color: '#cfe0ff' }]);
-  setTimeout(() => { if (gameState === STATE.SERVING) serve(); }, 1800);
-}
-
 // ============================================================
-//  GHOST RACKET TRACKING
+//  GHOST RACKET  — right hand only
 // ============================================================
 function getJointWorld(hand, name, out) {
   const joints = hand.joints;
@@ -693,34 +594,35 @@ function updateGhostRacket(dt) {
   if (!ghostRacket.visible) return;
   let placed = false;
 
+  // Prefer right hand
   for (const hand of hands) {
+    if (hand.userData.handedness && hand.userData.handedness !== 'right') continue;
     const j = hand.joints;
     if (!j || !j['wrist'] || j['wrist'].position === undefined) continue;
     const wrist = j['wrist'];
     if (!wrist.visible && wrist.position.lengthSq() === 0) continue;
 
-    const wristPos = wrist.getWorldPosition(_v1);
+    wrist.getWorldPosition(_v1);
     const ref = j['middle-finger-metacarpal'] || j['middle-finger-phalanx-proximal'] || j['index-finger-metacarpal'];
     if (!ref) continue;
-    const refPos = ref.getWorldPosition(_v2);
-    const fwd = refPos.clone().sub(wristPos).normalize();
-
+    ref.getWorldPosition(_v2);
+    const fwd = _v2.clone().sub(_v1).normalize();
     wrist.getWorldQuaternion(_q);
     const palmNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(_q).normalize();
     const yAxis = fwd;
-    let zAxis = palmNormal.clone();
-    const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
-    zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+    const xAxis = new THREE.Vector3().crossVectors(yAxis, palmNormal).normalize();
+    const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
     _m.makeBasis(xAxis, yAxis, zAxis);
-
-    racketHolder.position.copy(wristPos);
+    racketHolder.position.copy(_v1);
     racketHolder.quaternion.setFromRotationMatrix(_m);
     placed = true;
     break;
   }
 
   if (!placed) {
+    // Fallback to right grip controller
     for (const grip of grips) {
+      if (grip.userData.handedness && grip.userData.handedness !== 'right') continue;
       if (grip.visible && (grip.position.lengthSq() > 0 || grip.quaternion.w !== 1)) {
         grip.getWorldPosition(racketHolder.position);
         grip.getWorldQuaternion(racketHolder.quaternion);
@@ -745,25 +647,81 @@ function updateGhostRacket(dt) {
 }
 
 // ============================================================
-//  SERVE / AI HIT
+//  LEFT HAND — holds shuttlecock when serving
+// ============================================================
+function updateLeftHandShuttle() {
+  if (gameState !== STATE.SERVING) return;
+
+  // Find left hand wrist
+  let leftWristPos = null;
+  for (const hand of hands) {
+    if (hand.userData.handedness && hand.userData.handedness !== 'left') continue;
+    const tip = getJointWorld(hand, 'wrist', _v1.clone());
+    if (tip) { leftWristPos = tip.clone(); break; }
+  }
+
+  // Fallback: left grip controller
+  if (!leftWristPos) {
+    for (const grip of grips) {
+      if (grip.userData.handedness && grip.userData.handedness !== 'left') continue;
+      if (grip.visible && grip.position.lengthSq() > 0) {
+        leftWristPos = new THREE.Vector3();
+        grip.getWorldPosition(leftWristPos);
+        break;
+      }
+    }
+  }
+
+  if (leftWristPos) {
+    // Show shuttle floating just above left palm
+    shuttle.position.copy(leftWristPos).add(new THREE.Vector3(0, 0.08, 0));
+    shuttle.visible = true;
+    shuttleTrail.visible = false;
+    // Auto-serve when right hand swings fast enough
+    if (racketHolder.visible && racketVel.length() > SERVE_VEL_THRESH) {
+      serve();
+    }
+  } else {
+    // No hand detected yet — show shuttle in front of player
+    camera.getWorldPosition(_v1);
+    camera.getWorldDirection(_v2); _v2.y = 0; _v2.normalize();
+    shuttle.position.copy(_v1).addScaledVector(_v2, 0.5).add(new THREE.Vector3(-0.2, -0.1, 0));
+    shuttle.visible = true;
+  }
+}
+
+// ============================================================
+//  SERVE
 // ============================================================
 function serve() {
   if (gameState !== STATE.SERVING) return;
   hideMessage();
-  camera.getWorldPosition(_v1);
-  camera.getWorldDirection(_v2); _v2.y = 0; _v2.normalize();
-  shuttle.position.set(_v1.x + _v2.x * 0.5, _v1.y - 0.2, _v1.z + _v2.z * 0.5);
-  shuttle_v.set(_v2.x * 0.3, 2.6, _v2.z * 0.3);
+
+  // Launch from current shuttle position (left hand) toward opponent's court
+  // Direction: forward (-Z) with upward arc; bias from racket velocity
+  const spd = THREE.MathUtils.clamp(racketVel.length(), 3, 14);
+  shuttle_v.set(
+    racketVel.x * 0.3,
+    Math.max(2.8, racketVel.y * 0.3 + 2.2),
+    -spd * 0.55
+  );
+  // Clamp Z so it always crosses the net
+  if (shuttle_v.z > -2.5) shuttle_v.z = -3.5 - Math.random() * 1.5;
+
   shuttleActive = true;
   shuttle.visible = true;
   shuttleTrail.visible = true;
   trailPoints.length = 0;
-  lastHitter = 'serve';
+  lastHitter = 'player';
   gameState = STATE.RALLY;
+  playSound('hit', 0.5);
 }
 
+// ============================================================
+//  AI HIT
+// ============================================================
 function aiHit() {
-  oppState.swingT = 0; oppState.anim = 'swing';
+  oppState.swingT = 0;
   playSound('hit', 0.5);
   const targetX = (Math.random() - 0.5) * (COURT.halfWidth * 1.4);
   const targetZ = COURT.halfLen - (1 + Math.random() * 3.5);
@@ -775,10 +733,13 @@ function aiHit() {
 function launchTo(from, to, arcFactor) {
   shuttle.position.copy(from);
   const disp = to.clone().sub(from);
-  const horiz = new THREE.Vector3(disp.x, 0, disp.z);
-  const dist = horiz.length();
+  const dist = new THREE.Vector3(disp.x, 0, disp.z).length();
   const flightTime = THREE.MathUtils.clamp(dist / 7, 0.5, 1.3) * arcFactor;
-  shuttle_v.set(disp.x / flightTime, (to.y - from.y) / flightTime - 0.5 * GRAVITY * flightTime, disp.z / flightTime);
+  shuttle_v.set(
+    disp.x / flightTime,
+    (to.y - from.y) / flightTime - 0.5 * GRAVITY * flightTime,
+    disp.z / flightTime
+  );
   shuttleActive = true;
   shuttle.visible = true;
   shuttleTrail.visible = true;
@@ -803,7 +764,7 @@ function updateShuttle(dt) {
   if (trailPoints.length > MAX_TRAIL) trailPoints.shift();
   updateTrail();
 
-  // Racket collision
+  // Player racket collision
   if (ghostRacket.visible && racketHolder.visible) {
     const toShuttle = _v1.copy(shuttle.position).sub(racketHeadWorld);
     const distToPlane = toShuttle.dot(racketNormalWorld);
@@ -883,10 +844,9 @@ function predictLanding() {
 function onGroundHit() {
   playSound('ground', 0.5); haptic(0.3, 30);
   const z = shuttle.position.z;
-  const inBoundsX = Math.abs(shuttle.position.x) < COURT.halfWidth + 0.25;
-  const inBoundsZ = Math.abs(z) < COURT.halfLen + 0.25;
-  if (lastHitter === 'serve') { endRally(null, 'Let — replay'); return; }
-  if (!inBoundsX || !inBoundsZ) { endRally((lastHitter === 'player') ? 'ai' : 'player', 'Out of bounds!'); return; }
+  const inX = Math.abs(shuttle.position.x) < COURT.halfWidth + 0.25;
+  const inZ = Math.abs(z) < COURT.halfLen + 0.25;
+  if (!inX || !inZ) { endRally((lastHitter === 'player') ? 'ai' : 'player', 'Out of bounds!'); return; }
   endRally(z < 0 ? 'player' : 'ai', z < 0 ? 'Point — YOU!' : 'Point — AI');
 }
 
@@ -904,7 +864,7 @@ function endRally(winner, reason) {
     showMessage([
       { text: youWin ? '🏆 YOU WIN!' : 'AI WINS', size: 96, color: youWin ? '#FFD700' : '#FF9B9B' },
       { text: scorePlayer + ' — ' + scoreAI, size: 64, color: '#ffffff' },
-      { text: 'Pinch / trigger to play again', size: 40, color: '#9fb4d8' }
+      { text: 'Pinch to play again', size: 44, color: '#9fb4d8' }
     ]);
     if (youWin) audio && audio.cheer(1.0);
   } else {
@@ -916,11 +876,13 @@ function endRally(winner, reason) {
 }
 
 function resetMatch() {
-  scorePlayer = 0; scoreAI = 0; updateScoreboard();
-  hideMessage();
+  scorePlayer = 0; scoreAI = 0; updateScoreboard(); hideMessage();
   shuttle.visible = false; shuttleTrail.visible = false;
   gameState = STATE.SERVING;
-  setTimeout(() => { if (gameState === STATE.SERVING) serve(); }, 1200);
+  showMessage([
+    { text: '🏸 LEFT hand = shuttle', size: 56, color: '#7CFC9A' },
+    { text: 'Swing RIGHT hand to serve!', size: 50, color: '#cfe0ff' }
+  ]);
 }
 
 function updatePoint(dt) {
@@ -929,7 +891,10 @@ function updatePoint(dt) {
     shuttle.visible = false; shuttleTrail.visible = false;
     hideMessage();
     gameState = STATE.SERVING;
-    setTimeout(() => { if (gameState === STATE.SERVING) serve(); }, 900);
+    showMessage([
+      { text: '🏸 Left hand = shuttle', size: 60, color: '#7CFC9A' },
+      { text: 'Swing right to serve', size: 52, color: '#cfe0ff' }
+    ]);
   }
 }
 
@@ -1032,16 +997,16 @@ function loop() {
   const dt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
   updateGhostRacket(dt);
+  updateLeftHandShuttle();
   animateOpponent(dt, t);
   animateAudience(t);
-  updateReadyButton(dt);
   if (gameState === STATE.RALLY) updateShuttle(dt);
   else if (gameState === STATE.POINT) updatePoint(dt);
   renderer.render(scene, camera);
 }
 
 // ============================================================
-//  INIT — called last so every variable above is defined
+//  INIT
 // ============================================================
 function init() {
   buildLighting();
@@ -1050,14 +1015,15 @@ function init() {
   buildAudience();
   buildOpponent();
   buildShuttle();
-  buildReadyButton();
   buildScoreboard();
   setupXRInputs();
 
-  const vrBtn = VRButton.createButton(renderer, {
-    optionalFeatures: ['hand-tracking', 'local-floor', 'bounded-floor', 'layers']
+  // AR button — shows passthrough so user can see their real racket
+  const arBtn = ARButton.createButton(renderer, {
+    requiredFeatures: ['local-floor'],
+    optionalFeatures: ['hand-tracking', 'bounded-floor']
   });
-  document.getElementById('vrbtn').appendChild(vrBtn);
+  document.getElementById('vrbtn').appendChild(arBtn);
 
   renderer.xr.addEventListener('sessionstart', onSessionStart);
   renderer.xr.addEventListener('sessionend', onSessionEnd);
@@ -1071,7 +1037,7 @@ function init() {
   renderer.setAnimationLoop(loop);
 
   if (!navigator.xr) {
-    statusEl.textContent = 'WebXR not detected. Open this page in the Meta Quest Browser over HTTPS.';
+    statusEl.textContent = 'WebXR not detected. Open in the Meta Quest Browser over HTTPS.';
   } else {
     statusEl.textContent = '';
   }
