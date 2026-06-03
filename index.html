@@ -17,10 +17,21 @@
       <li>• Swing to hit the shuttle over the net. First to 7 points wins.</li>
     </ul>
     <div id="vrbtn" class="vr-button-wrap"></div>
-    <div id="status"></div>
+    <div id="status">Loading game…</div>
     <div id="hint">No external game assets — everything is generated procedurally.</div>
   </div>
 
+  <!-- Surface any load / runtime errors to the on-screen status -->
+  <script type="module">
+    window.addEventListener('error', e => {
+      const s = document.getElementById('status');
+      if (s) s.textContent = '⚠ ' + (e.message || 'Unknown error');
+    });
+    window.addEventListener('unhandledrejection', e => {
+      const s = document.getElementById('status');
+      if (s) s.textContent = '⚠ Load failed: ' + (e.reason?.message || e.reason || 'check network');
+    });
+  </script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

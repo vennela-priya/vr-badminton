@@ -1,6 +1,6 @@
-import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-import { VRButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/VRButton.js';
-import { XRControllerModelFactory } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/XRControllerModelFactory.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/VRButton.js';
+import { XRControllerModelFactory } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/XRControllerModelFactory.js';
 
 // ============================================================
 //  CONSTANTS
@@ -1072,6 +1072,8 @@ function init() {
 
   if (!navigator.xr) {
     statusEl.textContent = 'WebXR not detected. Open this page in the Meta Quest Browser over HTTPS.';
+  } else {
+    statusEl.textContent = '';
   }
 }
 
