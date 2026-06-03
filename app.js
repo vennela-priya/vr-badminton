@@ -164,6 +164,7 @@ function buildCourt() {
     new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, transparent: true, opacity: 0.82, depthWrite: false })
   );
   floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -0.003; // 3 mm below XR floor reference — prevents floating/z-fighting in AR
   floor.receiveShadow = true;
   courtGroup.add(floor);
 
@@ -417,15 +418,16 @@ function buildShuttle() {
 //  SCOREBOARD
 // ============================================================
 function buildScoreboard() {
+  // Attach to player group so boards stay in front of user regardless of court scale
   scoreBoard = makeTextPanel(1.6, 0.5);
-  scoreBoard.position.set(0, 3.0, -1.5);
-  scene.add(scoreBoard);
+  scoreBoard.position.set(0, 0.5, -2.2); // 2.2 m ahead, 0.5 m above waist
+  player.add(scoreBoard);
   updateScoreboard();
 
   msgBoard = makeTextPanel(2.2, 0.7);
-  msgBoard.position.set(0, 2.2, -1.5);
+  msgBoard.position.set(0, 0.1, -2.2);
   msgBoard.visible = false;
-  scene.add(msgBoard);
+  player.add(msgBoard);
 }
 
 function makeTextPanel(w, h) {
@@ -523,7 +525,11 @@ function onSessionStart() {
   if (!audio) audio = new AudioEngine();
   audio.resume(); audio.startAmbience();
 
-  // Try bounded-floor to anchor court to room
+  // Lock Y=0 so court never floats above the real floor
+  player.position.y = 0;
+  courtGroup.position.y = 0;
+
+  // Try bounded-floor to size court to the real room
   const session = renderer.xr.getSession();
   if (session) {
     session.requestReferenceSpace('bounded-floor').then(bf => {
@@ -533,17 +539,15 @@ function onSessionStart() {
           minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x);
           minZ = Math.min(minZ, pt.z); maxZ = Math.max(maxZ, pt.z);
         }
-        // Scale court to fit ~80% of room (capped at real badminton dimensions)
         COURT.halfWidth = Math.min((maxX - minX) * 0.4, 3.05);
         COURT.halfLen   = Math.min((maxZ - minZ) * 0.4, 6.7);
-        // Reposition player to near end of court
+        // Reposition player (Z only — Y stays 0)
         player.position.set(0, 0, COURT.halfLen - 1.4);
-        // Reposition opponent
         oppState.pos.set(0, 0, -(COURT.halfLen - 1.6));
         oppState.target.copy(oppState.pos);
         if (opponent) { opponent.position.copy(oppState.pos); }
       }
-    }).catch(() => {}); // bounded-floor not available — use defaults
+    }).catch(() => {}); // bounded-floor not available — keep defaults
   }
 
   scorePlayer = 0; scoreAI = 0; updateScoreboard(); hideMessage();
