@@ -9,7 +9,7 @@ import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
 // ============================================================
 const COURT = { halfLen: 6.7, halfWidth: 3.05, netY: 1.55, netHalfH: 0.38 };
 const GRAVITY = -9.8;
-const DRAG = 0.22;          // shuttlecock has high aerodynamic drag
+const DRAG = 0.22; // shuttlecock has high aerodynamic drag
 const MAX_TRAIL = 30;
 const WIN_SCORE = 7;
 const STATE = { BOOT: 0, SERVING: 2, RALLY: 3, POINT: 4, OVER: 5 };
@@ -351,14 +351,14 @@ function makeGhostRacket() {
   });
 
   const mtlLoader = new MTLLoader();
-  mtlLoader.setPath('/assets/');
-  mtlLoader.load('Racket.mtl', (materials) => {
+  mtlLoader.setPath("/assets/");
+  mtlLoader.load("Racket.mtl", (materials) => {
     materials.preload();
 
     const objLoader = new OBJLoader();
     objLoader.setMaterials(materials);
-    objLoader.setPath('/assets/');
-    objLoader.load('Racket.obj', (obj) => {
+    objLoader.setPath("/assets/");
+    objLoader.load("Racket.obj", (obj) => {
       // Replace all materials with ghost material
       obj.traverse((c) => {
         if (c.isMesh) {
@@ -368,11 +368,11 @@ function makeGhostRacket() {
       });
 
       obj.scale.setScalar(0.009);
-      obj.rotation.order = 'YXZ';
+      obj.rotation.order = "YXZ";
       obj.rotation.z = Math.PI + THREE.MathUtils.degToRad(40);
       obj.rotation.x = 0; // no tilt — bat aligns straight with arm
       // x = up/down, y = forward along arm, z = left/right
-      obj.position.set(0.18, 0.205, 0); // 7 cm closer to palm for real-bat alignment
+      obj.position.set(0.3, 0.205, 0); // aligned with real bat (10 cm horizontal correction)
 
       g.add(obj);
     });
@@ -410,7 +410,7 @@ function makeRacket({ ghost = false } = {}) {
       // Scale to real racket size (~660mm long)
       obj.scale.setScalar(0.009);
       // Handle points down (-Y), head up (+Y) to match physics origin
-      obj.rotation.order = 'YXZ';
+      obj.rotation.order = "YXZ";
       obj.rotation.z = Math.PI + THREE.MathUtils.degToRad(40);
       obj.rotation.x = THREE.MathUtils.degToRad(-15); // tilt to match real bat grip angle
       // Shift grip to align with hand/wrist origin
@@ -815,13 +815,13 @@ function getJointWorld(hand, name, out) {
 // Returns true when the right hand is in a grip pose (fingers curled around a handle)
 function isRightHandGripping() {
   for (const hand of hands) {
-    if (hand.userData.handedness !== 'right') continue;
+    if (hand.userData.handedness !== "right") continue;
     const j = hand.joints;
-    if (!j || !j['wrist']) continue;
+    if (!j || !j["wrist"]) continue;
     const wristPos = new THREE.Vector3();
-    j['wrist'].getWorldPosition(wristPos);
+    j["wrist"].getWorldPosition(wristPos);
     // Check curl of index, middle and ring fingertips toward wrist
-    const tips = ['index-finger-tip', 'middle-finger-tip', 'ring-finger-tip'];
+    const tips = ["index-finger-tip", "middle-finger-tip", "ring-finger-tip"];
     let curled = 0;
     for (const name of tips) {
       if (!j[name]) continue;
@@ -1129,7 +1129,7 @@ function updateShuttle(dt) {
       Math.abs(distToPlane) < 0.18 &&
       inPlaneDist < ghostRacket.userData.headRadius &&
       lastHitter !== "player" &&
-      racketSwingSpeed > 0.5 &&   // racket must actually be moving
+      racketSwingSpeed > 0.5 && // racket must actually be moving
       shuttleNotFleeing
     ) {
       playerHit();
@@ -1171,7 +1171,7 @@ function updateShuttle(dt) {
       new THREE.Vector3(shuttle.position.x, 0, shuttle.position.z),
     );
     if (
-      shuttle.position.z < -0.3 &&       // shuttle past the net
+      shuttle.position.z < -0.3 && // shuttle past the net
       shuttle.position.y < 2.2 &&
       shuttle.position.y > 0.18 &&
       reach < 1.6 &&
@@ -1221,7 +1221,8 @@ function playerHit() {
   // Combined exit speed — capped low so shuttle stays visible between hits
   const exitSpeed = THREE.MathUtils.clamp(
     strikeSpeed * 1.2 + incomingSpeed * 0.5,
-    2.5, 14
+    2.5,
+    14,
   );
 
   // Direction = racket face direction (feel the angle you hit at)
