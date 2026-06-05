@@ -337,7 +337,7 @@ function animateAudience(t) {
 // ============================================================
 function makeGhostRacket() {
   const g = new THREE.Group();
-  g.userData.headLocal = new THREE.Vector3(0, 0.46, 0);
+  g.userData.headLocal = new THREE.Vector3(0, 0.39, 0); // 7 cm closer to palm
   g.userData.headRadius = 0.18;
 
   const ghostMat = new THREE.MeshStandardMaterial({
@@ -372,7 +372,7 @@ function makeGhostRacket() {
       obj.rotation.z = Math.PI + THREE.MathUtils.degToRad(40);
       obj.rotation.x = 0; // no tilt — bat aligns straight with arm
       // x = up/down, y = forward along arm, z = left/right
-      obj.position.set(0.25, 0.205, 0);
+      obj.position.set(0.18, 0.205, 0); // 7 cm closer to palm for real-bat alignment
 
       g.add(obj);
     });
@@ -944,7 +944,8 @@ function updateLeftHandShuttle() {
     // Convert world-space wrist position into worldRoot's local space
     // (worldRoot is Y-shifted to the detected floor, so we must un-shift)
     const localWristPos = worldRoot.worldToLocal(leftWristPos.clone());
-    shuttle.position.copy(localWristPos).add(new THREE.Vector3(0, 0.08, 0));
+    // 3 cm higher so real bat clears the hand on serve
+    shuttle.position.copy(localWristPos).add(new THREE.Vector3(0, 0.11, 0));
     shuttle.visible = true;
     shuttleTrail.visible = false;
 
@@ -953,7 +954,8 @@ function updateLeftHandShuttle() {
       const shuttleWorldPos = new THREE.Vector3();
       shuttle.getWorldPosition(shuttleWorldPos);
       const contactDist = racketHeadWorld.distanceTo(shuttleWorldPos);
-      const hitZone = ghostRacket.userData.headRadius + 0.09; // racket string bed + shuttle cork
+      // Generous serve zone: real bat tracking has lag/offset, needs forgiveness
+      const hitZone = ghostRacket.userData.headRadius + 0.32;
       if (contactDist < hitZone) {
         serve();
       }
@@ -998,7 +1000,7 @@ function serve() {
   hideMessage();
 
   const swingSpd = racketVel.length();
-  const spd = THREE.MathUtils.clamp(swingSpd * 2.2, 6, 28);
+  const spd = THREE.MathUtils.clamp(swingSpd * 1.3, 4, 11); // slower — visible arc
 
   // Use actual racket swing direction for realistic feel
   const swingDir = racketVel.clone().normalize();
@@ -1075,7 +1077,7 @@ function launchTo(from, to, arcFactor) {
   shuttle.position.copy(from);
   const disp = to.clone().sub(from);
   const dist = new THREE.Vector3(disp.x, 0, disp.z).length();
-  const flightTime = THREE.MathUtils.clamp(dist / 7, 0.5, 1.3) * arcFactor;
+  const flightTime = THREE.MathUtils.clamp(dist / 4.5, 0.8, 2.2) * arcFactor;
   shuttle_v.set(
     disp.x / flightTime,
     (to.y - from.y) / flightTime - 0.5 * GRAVITY * flightTime,
@@ -1216,10 +1218,10 @@ function playerHit() {
   // Incoming shuttle speed also contributes (like real ball-racket collision)
   const incomingSpeed = Math.max(0, -shuttle_v.dot(face));
 
-  // Combined exit speed (coefficient of restitution ~0.7 for shuttlecock)
+  // Combined exit speed — capped low so shuttle stays visible between hits
   const exitSpeed = THREE.MathUtils.clamp(
-    strikeSpeed * 1.7 + incomingSpeed * 0.6,
-    3, 35
+    strikeSpeed * 1.2 + incomingSpeed * 0.5,
+    2.5, 14
   );
 
   // Direction = racket face direction (feel the angle you hit at)
