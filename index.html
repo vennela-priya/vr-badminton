@@ -1,40 +1,61 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>VR Badminton — Quest</title>
-  <link rel="stylesheet" href="./style.css" />
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>VR Badminton — Quest</title>
+    <link rel="stylesheet" href="./style.css" />
 
-</head>
-<body>
-  <div id="overlay">
-    <h1>🏸 VR BADMINTON AR</h1>
-    <p>Hold your <b>real racket</b> in your right hand — see it through the Quest cameras and swing to play.</p>
-    <ul>
-      <li>• Open in the Meta Quest Browser over HTTPS.</li>
-      <li>• Tap <b>START AR</b> and allow hand tracking.</li>
-      <li>• Your <b>LEFT hand</b> holds the shuttle — raise it up.</li>
-      <li>• Swing your <b>RIGHT hand</b> (racket) to serve and rally.</li>
-      <li>• Court aligns to your room floor automatically.</li>
-      <li>• First to 7 points wins!</li>
-    </ul>
-    <div id="vrbtn" class="vr-button-wrap"></div>
-    <div id="status">Loading game…</div>
-    <div id="hint">No external assets — everything generated in real-time.</div>
-  </div>
+    <!-- Import map must come before any type="module" scripts -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="overlay">
+      <h1>🏸 VR BADMINTON AR</h1>
+      <p>
+        Hold your <b>real racket</b> in your right hand — see it through the
+        Quest cameras and swing to play.
+      </p>
+      <ul>
+        <li>• Open in the Meta Quest Browser over HTTPS.</li>
+        <li>• Tap <b>START AR</b> and allow hand tracking.</li>
+        <li>• Your <b>LEFT hand</b> holds the shuttle — raise it up.</li>
+        <li>• Swing your <b>RIGHT hand</b> (racket) to serve and rally.</li>
+        /
+        <li>• Court aligns to your room floor automatically.</li>
+        <li>• First to 7 points wins!</li>
+      </ul>
+      <div id="vrbtn" class="vr-button-wrap"></div>
+      <div id="status">Loading game…</div>
+      <div id="hint">
+        No external assets — everything generated in real-time.
+      </div>
+    </div>
 
-  <!-- Surface any load / runtime errors to the on-screen status -->
-  <script type="module">
-    window.addEventListener('error', e => {
-      const s = document.getElementById('status');
-      if (s) s.textContent = '⚠ ' + (e.message || 'Unknown error');
-    });
-    window.addEventListener('unhandledrejection', e => {
-      const s = document.getElementById('status');
-      if (s) s.textContent = '⚠ Load failed: ' + (e.reason?.message || e.reason || 'check network');
-    });
-  </script>
-  <script type="module" src="./app.js"></script>
-</body>
+    <!-- Surface any load / runtime errors to the on-screen status -->
+    <script type="module">
+      window.addEventListener("error", (e) => {
+        const s = document.getElementById("status");
+        if (s) s.textContent = "⚠ " + (e.message || "Unknown error");
+      });
+      window.addEventListener("unhandledrejection", (e) => {
+        const s = document.getElementById("status");
+        if (s)
+          s.textContent =
+            "⚠ Load failed: " +
+            (e.reason?.message || e.reason || "check network");
+      });
+    </script>
+    <script type="module" src="./app.js"></script>
+  </body>
 </html>
